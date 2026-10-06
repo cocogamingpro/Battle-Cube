@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blocks</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#0d121a;--panel:#1b2430;--edge:#3a4a5e;--text:#f4f1e8;--gold:#f2c14e}
+  html,body{margin:0;height:100%;overflow:hidden;background:#9fd3f0;font-family:'Press Start 2P',monospace;color:var(--text)}
+  canvas{display:block}
+  .panel{background:var(--panel);box-shadow:0 0 0 3px var(--ink),inset 0 0 0 3px var(--edge);padding:12px 14px;font-size:10px;line-height:1.8}
+  #info{position:fixed;top:14px;left:14px}
+  #dot{display:inline-block;width:8px;height:8px;margin-right:8px;background:#e5534b}
+  #dot.on{background:#6aa84f}
+  #cross{position:fixed;left:50%;top:50%;width:0;height:0;pointer-events:none;mix-blend-mode:difference}
+  #cross:before,#cross:after{content:"";position:absolute;background:#fff}
+  #cross:before{left:-9px;top:-1px;width:18px;height:2px}
+  #cross:after{left:-1px;top:-9px;width:2px;height:18px}
+  #hotbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none}
+  #label{font-size:11px;margin-bottom:10px;color:var(--gold);text-shadow:2px 2px 0 var(--ink)}
+  #bar{display:inline-flex;gap:6px;padding:8px;background:var(--panel);box-shadow:0 0 0 3px var(--ink),inset 0 0 0 3px var(--edge)}
+  .slot{position:relative;width:52px;height:52px;background:#101821;box-shadow:inset 0 0 0 3px var(--ink)}
+  .slot i{position:absolute;inset:8px;image-rendering:pixelated;background-size:100% 100%}
+  .slot b{position:absolute;left:5px;top:4px;font-size:8px;font-weight:normal;text-shadow:1px 1px 0 var(--ink)}
+  .slot.on{box-shadow:inset 0 0 0 3px var(--gold);background:#26384a}
+  #start{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(13,18,26,.7);cursor:pointer;text-align:center}
+  #start h1{font-size:44px;margin:0 0 18px;text-shadow:5px 5px 0 var(--ink);letter-spacing:4px}
+  #start .panel{display:inline-block;text-align:left;font-size:10px;line-height:2.4}
+  kbd{display:inline-block;min-width:14px;padding:2px 6px;margin-right:6px;background:var(--edge);box-shadow:inset 0 -3px 0 var(--ink);font-family:inherit;text-align:center}
+  #go{margin-top:22px;font-size:13px;color:var(--gold)}
+  @media(max-width:600px){#start h1{font-size:28px}.slot{width:40px;height:40px}}
+</style>
+</head>
+<body>
+<div id="info" class="panel"><span id="dot"></span><span id="status">Connecting</span><br>Players: <span id="count">1</span></div>
+<div id="cross"></div>
+<div id="hotbar"><div id="label"></div><div id="bar"></div></div>
+<div id="start"><div>
+  <h1>BLOCKS</h1>
+  <div class="panel">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move<br>
+    <kbd>Space</kbd> Jump<br>
+    <kbd>Click</kbd> Break &nbsp; <kbd>Right</kbd> Place<br>
+    <kbd>1-5</kbd> or wheel: Pick block
+  </div>
+  <div id="go">Click to play</div>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const SPAWN = { x: 16, y: 2, z: 16 };
+let selected = 1;
+
+// ---------- Pixel textures (16x16, generated) ----------
+function rng(s) { return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); }
+function mk(seed, draw) {
+  const c = document.createElement('canvas'); c.width = c.height = 16;
+  const g = c.getContext('2d'); draw(g, rng(seed));
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = t.minFilter = THREE.NearestFilter;
+  return { t, c };
+}
+const px = (g, x, y, [r, gr, b], v) => {
+  const k = (v - .5) * 255;
+  g.fillStyle = `rgb(${Math.max(0, Math.min(255, r + k))},${Math.max(0, Math.min(255, gr + k))},${Math.max(0, Math.min(255, b + k))})`;
+  g.fillRect(x, y, 1, 1);
+};
+const noise = (base, amt) => (g, r) => { for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) px(g, x, y, base, .5 + (r() - .5) * amt); };
+const DIRT = [134, 96, 67], GRASS = [106, 170, 70];
+const dirt = mk(1, noise(DIRT, .22));
+const grassTop = mk(2, noise(GRASS, .22));
+const grassSide = mk(3, (g, r) => {
+  noise(DIRT, .22)(g, r);
+  for (let x = 0; x < 16; x++) { const h = 3 + (r() < .45 ? 1 : 0) + (r() < .15 ? 1 : 0); for (let y = 0; y < h; y++) px(g, x, y, GRASS, .5 + (r() - .5) * .22); }
+});
+const stone = mk(4, (g, r) => { noise([128, 128, 128], .18)(g, r); for (let i = 0; i < 14; i++) px(g, r() * 16 | 0, r() * 16 | 0, [90, 90, 95], .5); });
+const sand = mk(5, noise([226, 205, 140], .1));
+const brick = mk(6, (g, r) => {
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    const mortar = y % 4 === 3 || x % 8 === ((y >> 2) % 2) * 4;
+    px(g, x, y, mortar ? [205, 195, 185] : [172, 70, 60], .5 + (r() - .5) * (mortar ? .06 : .16));
+  }
+});
+// index = block type; faces order: +x, -x, +y(top), -y(bottom), +z, -z
+const BLOCKS = [null,
+  { name: 'Grass', faces: [grassSide, grassSide, grassTop, dirt, grassSide, grassSide], icon: grassSide },
+  { name: 'Dirt',  faces: Array(6).fill(dirt),  icon: dirt },
+  { name: 'Stone', faces: Array(6).fill(stone), icon: stone },
+  { name: 'Sand',  faces: Array(6).fill(sand),  icon: sand },
+  { name: 'Brick', faces: Array(6).fill(brick), icon: brick },
+];
+const mats = BLOCKS.map(b => b && b.faces.map(f => new THREE.MeshLambertMaterial({ map: f.t })));
+
+// ---------- Scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fd3f0);
+scene.fog = new THREE.Fog(0x9fd3f0, 40, 120);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 200);
+camera.rotation.order = 'YXZ';
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 0.55);
+sun.position.set(0.5, 1, 0.3);
+scene.add(sun);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// Outline + faint highlight on the block you're looking at
+const outline = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.006, 1.006, 1.006)),
+  new THREE.LineBasicMaterial({ color: 0x111111 }));
+const tint = new THREE.Mesh(new THREE.BoxGeometry(1.003, 1.003, 1.003),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .16, depthWrite: false }));
+outline.visible = tint.visible = false;
+scene.add(outline, tint);
+
+// ---------- Blocks ----------
+const geo = new THREE.BoxGeometry(1, 1, 1);
+const blocks = new Map();
+const key = (x, y, z) => x + ',' + y + ',' + z;
+function setBlock(x, y, z, b) {
+  const k = key(x, y, z), old = blocks.get(k);
+  if (old) { scene.remove(old.mesh); blocks.delete(k); }
+  if (b) {
+    const mesh = new THREE.Mesh(geo, mats[b]);
+    mesh.position.set(x + .5, y + .5, z + .5);
+    scene.add(mesh);
+    blocks.set(k, { b, mesh });
+  }
+}
+
+// ---------- GUI ----------
+const $ = (id) => document.getElementById(id);
+const bar = $('bar');
+BLOCKS.slice(1).forEach((b, i) => {
+  const d = document.createElement('div');
+  d.className = 'slot';
+  d.innerHTML = `<i style="background-image:url(${b.icon.c.toDataURL()})"></i><b>${i + 1}</b>`;
+  bar.appendChild(d);
+});
+function select(n) {
+  selected = n;
+  [...bar.children].forEach((s, i) => s.classList.toggle('on', i + 1 === n));
+  $('label').textContent = BLOCKS[n].name;
+}
+select(1);
+
+// ---------- Network ----------
+let myId = null, ws;
+const others = new Map();
+function makeAvatar(id) {
+  const g = new THREE.Group();
+  const col = new THREE.Color().setHSL((id * 0.137) % 1, 0.7, 0.55);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(.6, 1.2, .6), new THREE.MeshLambertMaterial({ color: col }));
+  body.position.y = .6;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(.5, .5, .5), new THREE.MeshLambertMaterial({ color: 0xf1c27d }));
+  head.position.y = 1.45;
+  const face = new THREE.Mesh(new THREE.BoxGeometry(.3, .1, .05), new THREE.MeshBasicMaterial({ color: 0x222222 }));
+  face.position.set(0, 1.5, -.26);
+  g.add(body, head, face);
+  scene.add(g);
+  return { g, x: 0, y: 0, z: 0, ry: 0 };
+}
+function connect() {
+  const host = location.host || 'localhost:3000'; // empty when opened as a file://
+  try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host); }
+  catch (err) { $('status').textContent = 'Offline'; return; }
+  ws.onopen = () => { $('dot').className = 'on'; $('status').textContent = 'Online'; };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'init') {
+      myId = m.id;
+      m.blocks.forEach(([x, y, z, b]) => setBlock(x, y, z, b));
+    } else if (m.t === 'set') setBlock(m.x, m.y, m.z, m.b);
+    else if (m.t === 'leave') {
+      const o = others.get(m.id);
+      if (o) { scene.remove(o.g); others.delete(m.id); }
+    } else if (m.t === 'pos') {
+      for (const id in m.players) {
+        if (+id === myId) continue;
+        const q = m.players[id];
+        let o = others.get(+id);
+        if (!o) { o = makeAvatar(+id); Object.assign(o, { x: q.x, y: q.y, z: q.z }); others.set(+id, o); }
+        Object.assign(o, { tx: q.x, ty: q.y, tz: q.z, try_: q.ry });
+      }
+    }
+  };
+  ws.onclose = () => { $('dot').className = ''; $('status').textContent = 'Reconnecting'; setTimeout(connect, 2000); };
+}
+connect();
+const send = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+
+// ---------- Player ----------
+const p = { ...SPAWN }, vel = { y: 0 };
+let yaw = 0, pitch = 0, onGround = false;
+const keys = {};
+const HW = 0.3, HEIGHT = 1.8;
+
+function hit() {
+  for (let x = Math.floor(p.x - HW); x <= Math.floor(p.x + HW); x++)
+    for (let y = Math.floor(p.y); y <= Math.floor(p.y + HEIGHT); y++)
+      for (let z = Math.floor(p.z - HW); z <= Math.floor(p.z + HW); z++)
+        if (blocks.has(key(x, y, z))) return true;
+  return false;
+}
+function move(dx, dy, dz) {
+  p.x += dx; if (hit()) p.x -= dx;
+  p.z += dz; if (hit()) p.z -= dz;
+  p.y += dy; onGround = false;
+  if (hit()) { p.y -= dy; if (dy < 0) onGround = true; vel.y = 0; }
+}
+function intersectsPlayer(bx, by, bz) {
+  return bx + 1 > p.x - HW && bx < p.x + HW && by + 1 > p.y && by < p.y + HEIGHT && bz + 1 > p.z - HW && bz < p.z + HW;
+}
+function target() {
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  let prev = null;
+  for (let t = 0; t < 6; t += 0.04) {
+    const x = Math.floor(camera.position.x + dir.x * t);
+    const y = Math.floor(camera.position.y + dir.y * t);
+    const z = Math.floor(camera.position.z + dir.z * t);
+    if (blocks.has(key(x, y, z))) return { hit: [x, y, z], prev };
+    prev = [x, y, z];
+  }
+  return null;
+}
+
+// ---------- Input ----------
+const startEl = $('start');
+startEl.onclick = () => renderer.domElement.requestPointerLock();
+document.addEventListener('pointerlockchange', () => {
+  const locked = !!document.pointerLockElement;
+  startEl.style.display = locked ? 'none' : 'flex';
+  $('go').textContent = 'Click to play';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!document.pointerLockElement) return;
+  yaw -= e.movementX * 0.0025;
+  pitch = Math.max(-1.55, Math.min(1.55, pitch - e.movementY * 0.0025));
+});
+addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  const n = +e.key; if (n >= 1 && n <= 5) select(n);
+});
+addEventListener('keyup', (e) => keys[e.code] = false);
+addEventListener('wheel', (e) => {
+  if (document.pointerLockElement) select(((selected - 1 + (e.deltaY > 0 ? 1 : 4)) % 5) + 1);
+});
+addEventListener('contextmenu', (e) => e.preventDefault());
+addEventListener('mousedown', (e) => {
+  if (!document.pointerLockElement) return;
+  const t = target(); if (!t) return;
+  if (e.button === 0) send({ t: 'set', x: t.hit[0], y: t.hit[1], z: t.hit[2], b: 0 });
+  else if (e.button === 2 && t.prev && !intersectsPlayer(...t.prev))
+    send({ t: 'set', x: t.prev[0], y: t.prev[1], z: t.prev[2], b: selected });
+});
+
+// ---------- Loop ----------
+let last = performance.now(), sendTimer = 0, shownCount = 1;
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((now - last) / 1000, 0.05); last = now;
+
+  let fx = 0, fz = 0;
+  if (keys.KeyW) fz -= 1; if (keys.KeyS) fz += 1;
+  if (keys.KeyA) fx -= 1; if (keys.KeyD) fx += 1;
+  const len = Math.hypot(fx, fz) || 1, speed = 5;
+  const mx = (fx * Math.cos(yaw) + fz * Math.sin(yaw)) / len * speed * dt;
+  const mz = (-fx * Math.sin(yaw) + fz * Math.cos(yaw)) / len * speed * dt;
+
+  if (keys.Space && onGround) { vel.y = 8.5; onGround = false; }
+  vel.y -= 25 * dt;
+  move(mx, vel.y * dt, mz);
+  if (p.y < -20) { Object.assign(p, SPAWN); vel.y = 0; }
+
+  camera.position.set(p.x, p.y + 1.6, p.z);
+  camera.rotation.set(pitch, yaw, 0);
+
+  const t = document.pointerLockElement ? target() : null;
+  outline.visible = tint.visible = !!t;
+  if (t) {
+    outline.position.set(t.hit[0] + .5, t.hit[1] + .5, t.hit[2] + .5);
+    tint.position.copy(outline.position);
+  }
+
+  for (const o of others.values()) {
+    if (o.tx === undefined) continue;
+    o.x += (o.tx - o.x) * 0.3; o.y += (o.ty - o.y) * 0.3; o.z += (o.tz - o.z) * 0.3;
+    o.ry += (o.try_ - o.ry) * 0.3;
+    o.g.position.set(o.x, o.y, o.z); o.g.rotation.y = o.ry;
+  }
+
+  sendTimer += dt;
+  if (sendTimer > 0.05) { sendTimer = 0; send({ t: 'pos', x: p.x, y: p.y, z: p.z, ry: yaw }); }
+
+  if (others.size + 1 !== shownCount) { shownCount = others.size + 1; $('count').textContent = shownCount; }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
